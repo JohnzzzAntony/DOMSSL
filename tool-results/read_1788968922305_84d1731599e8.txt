@@ -1,0 +1,2002 @@
+     1→# Domain & SSL Manager --- Claude Build Specification
+     2→
+     3→## 1. Project Objective
+     4→
+     5→Build a production-ready, secure web application for centralized
+     6→management of domains, SSL/TLS certificates, servers, DNS providers,
+     7→expiry monitoring, notifications, certificate issuance, automatic
+     8→renewal, and automatic certificate installation.
+     9→
+    10→The application must be able to:
+    11→
+    12→-   Add, edit, verify, monitor, and delete domains.
+    13→-   Discover and verify domain expiry dates using authoritative
+    14→    domain-registration data such as RDAP and supported registrar APIs.
+    15→-   Inspect the live SSL/TLS certificate served by each domain over
+    16→    HTTPS.
+    17→-   Compare stored dates with freshly discovered dates and clearly
+    18→    identify mismatches.
+    19→-   Monitor domain and SSL expiry continuously.
+    20→-   Notify administrators before expiry, with 5 days being the mandatory
+    21→    critical alert threshold.
+    22→-   Support free publicly trusted SSL certificates through ACME
+    23→    providers, primarily Let's Encrypt.
+    24→-   Automatically renew certificates where automation is supported.
+    25→-   Automatically install renewed certificates on supported servers.
+    26→-   Support Nginx and Apache initially.
+    27→-   Support SSH-based server management using secure, restricted
+    28→    credentials.
+    29→-   Support DNS-01 automation for supported DNS providers, initially
+    30→    Cloudflare.
+    31→-   Validate server configuration before reload.
+    32→-   Automatically verify the live certificate after installation.
+    33→-   Roll back to the previous known-good certificate/configuration if
+    34→    deployment fails.
+    35→-   Maintain detailed audit logs for every automated and manual
+    36→    operation.
+    37→
+    38→The product should feel like a professional enterprise DevOps/SaaS
+    39→control panel, not a generic hosting panel.
+    40→
+    41→------------------------------------------------------------------------
+    42→
+    43→# 2. Core Product Principle
+    44→
+    45→The application must never blindly trust manually entered expiry dates.
+    46→
+    47→For every domain:
+    48→
+    49→1.  User adds domain.
+    50→2.  System performs a fresh domain-expiry lookup.
+    51→3.  System connects to the live HTTPS endpoint.
+    52→4.  System inspects the actual certificate.
+    53→5.  System compares discovered values against stored values.
+    54→6.  System displays whether the information is verified.
+    55→7.  Only after successful verification should automation be enabled by
+    56→    default.
+    57→8.  Every check must record timestamp, source, result, and errors.
+    58→
+    59→Example:
+    60→
+    61→``` text
+    62→example.com
+    63→
+    64→Domain expiry:
+    65→RDAP              2027-02-15
+    66→Registrar API      2027-02-15
+    67→Stored value       2027-01-15
+    68→
+    69→Status:
+    70→⚠ DATE MISMATCH
+    71→
+    72→SSL expiry:
+    73→Live certificate  2026-10-30
+    74→Stored value       2026-10-30
+    75→
+    76→Status:
+    77→✓ VERIFIED
+    78→```
+    79→
+    80→------------------------------------------------------------------------
+    81→
+    82→# 3. Recommended Technology Stack
+    83→
+    84→Use a modern TypeScript full-stack architecture.
+    85→
+    86→## Frontend
+    87→
+    88→-   Next.js App Router
+    89→-   React
+    90→-   TypeScript with strict mode
+    91→-   Tailwind CSS
+    92→-   shadcn/ui / Radix UI
+    93→-   Lucide React
+    94→-   Framer Motion for subtle UI transitions
+    95→-   TanStack Query where appropriate
+    96→-   React Hook Form
+    97→-   Zod validation
+    98→
+    99→## Backend
+   100→
+   101→-   Next.js server/API routes where appropriate
+   102→-   Node.js/TypeScript service layer
+   103→-   Prisma ORM
+   104→-   PostgreSQL
+   105→
+   106→## Background Processing
+   107→
+   108→Use:
+   109→
+   110→-   Redis
+   111→-   BullMQ
+   112→
+   113→Do not perform long-running domain scans, SSL scans, certificate
+   114→issuance, SSH operations, or notification jobs directly inside normal
+   115→HTTP requests.
+   116→
+   117→Use background jobs.
+   118→
+   119→## Infrastructure
+   120→
+   121→Recommended deployment:
+   122→
+   123→``` text
+   124→Web application
+   125→Next.js
+   126→
+   127→Worker
+   128→Node.js + BullMQ
+   129→
+   130→Database
+   131→PostgreSQL
+   132→
+   133→Queue
+   134→Redis
+   135→
+   136→Reverse proxy
+   137→Nginx
+   138→
+   139→SSL
+   140→ACME / Let's Encrypt
+   141→
+   142→Server management
+   143→SSH
+   144→
+   145→DNS
+   146→Cloudflare API initially
+   147→```
+   148→
+   149→------------------------------------------------------------------------
+   150→
+   151→# 4. High-Level Architecture
+   152→
+   153→``` text
+   154→                    ┌──────────────────────┐
+   155→                    │      Next.js UI      │
+   156→                    │ Dashboard / Admin    │
+   157→                    └──────────┬───────────┘
+   158→                               │
+   159→                               ▼
+   160→                    ┌──────────────────────┐
+   161→                    │     API Layer        │
+   162→                    │ Auth / Validation    │
+   163→                    └──────────┬───────────┘
+   164→                               │
+   165→              ┌────────────────┼─────────────────┐
+   166→              │                │                 │
+   167→              ▼                ▼                 ▼
+   168→        PostgreSQL           Redis           External APIs
+   169→          Prisma           BullMQ          RDAP / DNS / CA
+   170→              │                │                 │
+   171→              │                ▼                 │
+   172→              │          Worker Service         │
+   173→              │                │                 │
+   174→              │       ┌────────┼─────────┐       │
+   175→              │       ▼        ▼         ▼       │
+   176→              │     Domain    SSL       SSH      │
+   177→              │     Checks   Engine    Manager    │
+   178→              │                         │         │
+   179→              │                         ▼         │
+   180→              │                    Nginx/Apache   │
+   181→              │                                  │
+   182→              └──────────────────────────────────┘
+   183→```
+   184→
+   185→------------------------------------------------------------------------
+   186→
+   187→# 5. Navigation
+   188→
+   189→The primary navigation should contain:
+   190→
+   191→``` text
+   192→Dashboard
+   193→
+   194→Domains
+   195→Certificates
+   196→Servers
+   197→DNS Providers
+   198→
+   199→Notifications
+   200→Automation Logs
+   201→Reports
+   202→
+   203→Settings
+   204→```
+   205→
+   206→Optional future navigation:
+   207→
+   208→``` text
+   209→Users
+   210→Teams
+   211→API Keys
+   212→Integrations
+   213→System Health
+   214→```
+   215→
+   216→The sidebar should remain visible on desktop and collapse to an
+   217→icon/mobile drawer on smaller screens.
+   218→
+   219→------------------------------------------------------------------------
+   220→
+   221→# 6. Visual Design System
+   222→
+   223→## Design direction
+   224→
+   225→Create a clean, modern, high-fidelity enterprise SaaS interface.
+   226→
+   227→Characteristics:
+   228→
+   229→-   White/light gray primary surfaces.
+   230→-   Very subtle borders.
+   231→-   Rounded cards.
+   232→-   Strong visual hierarchy.
+   233→-   Compact but readable tables.
+   234→-   Blue primary action color.
+   235→-   Green for healthy/success.
+   236→-   Amber for warning/expiring.
+   237→-   Red for critical/expired/error.
+   238→-   Purple can be used for infrastructure/server-related metrics.
+   239→-   Avoid excessive gradients.
+   240→-   Avoid oversized decorative elements.
+   241→-   Use icons to reinforce status.
+   242→-   Use whitespace generously.
+   243→-   Prioritize information density without clutter.
+   244→
+   245→## Typography
+   246→
+   247→Recommended:
+   248→
+   249→``` text
+   250→Font:
+   251→Inter
+   252→
+   253→Page title:
+   254→28–32px / 700
+   255→
+   256→Section title:
+   257→18–20px / 600
+   258→
+   259→Card metric:
+   260→26–32px / 700
+   261→
+   262→Body:
+   263→14–15px / 400
+   264→
+   265→Small metadata:
+   266→12–13px / 400
+   267→
+   268→Table:
+   269→13–14px
+   270→```
+   271→
+   272→## Radius
+   273→
+   274→``` text
+   275→Cards: 12–16px
+   276→Buttons: 8–10px
+   277→Inputs: 8px
+   278→Badges: 9999px
+   279→```
+   280→
+   281→## Shadows
+   282→
+   283→Use very subtle shadows only where useful.
+   284→
+   285→Prefer borders over heavy shadows.
+   286→
+   287→------------------------------------------------------------------------
+   288→
+   289→# 7. Dashboard
+   290→
+   291→Route:
+   292→
+   293→``` text
+   294→/dashboard
+   295→```
+   296→
+   297→## Header
+   298→
+   299→Display:
+   300→
+   301→``` text
+   302→Dashboard
+   303→
+   304→Monitor your domains, SSL certificates and servers.
+   305→
+   306→[Search domains, servers...]
+   307→
+   308→Notification icon
+   309→User avatar
+   310→Admin menu
+   311→```
+   312→
+   313→## Metric cards
+   314→
+   315→Four primary cards:
+   316→
+   317→``` text
+   318→Total Domains
+   319→42
+   320→
+   321→SSL Certificates
+   322→38
+   323→
+   324→Servers
+   325→12
+   326→
+   327→Pending Notifications
+   328→5
+   329→```
+   330→
+   331→Secondary status cards:
+   332→
+   333→``` text
+   334→Expiring Soon
+   335→5
+   336→
+   337→Expired
+   338→2
+   339→
+   340→SSL Errors
+   341→4
+   342→```
+   343→
+   344→Each card should be clickable and navigate to the relevant filtered
+   345→page.
+   346→
+   347→## Domain overview table
+   348→
+   349→Columns:
+   350→
+   351→``` text
+   352→Domain
+   353→SSL Expiry
+   354→Domain Expiry
+   355→Status
+   356→Automation
+   357→Actions
+   358→```
+   359→
+   360→Example:
+   361→
+   362→``` text
+   363→example.com
+   364→72 days
+   365→160 days
+   366→Healthy
+   367→ON
+   368→View
+   369→
+   370→example.ae
+   371→4 days
+   372→21 days
+   373→Expiring
+   374→ON
+   375→View
+   376→
+   377→example.org
+   378→93 days
+   379→12 days
+   380→Domain Expiring
+   381→ON
+   382→View
+   383→
+   384→testsite.com
+   385→28 days
+   386→364 days
+   387→Healthy
+   388→OFF
+   389→View
+   390→```
+   391→
+   392→## Status chart
+   393→
+   394→Show a donut chart:
+   395→
+   396→``` text
+   397→Healthy
+   398→Expiring
+   399→Expired
+   400→SSL Error
+   401→```
+   402→
+   403→## Recent automation activity
+   404→
+   405→Display latest jobs:
+   406→
+   407→``` text
+   408→SSL Renewal
+   409→example.com
+   410→Success
+   411→2 min ago
+   412→
+   413→Domain Check
+   414→example.ae
+   415→Success
+   416→10 min ago
+   417→
+   418→SSL Installation
+   419→example.org
+   420→Failed
+   421→18 min ago
+   422→```
+   423→
+   424→------------------------------------------------------------------------
+   425→
+   426→# 8. Domain List
+   427→
+   428→Route:
+   429→
+   430→``` text
+   431→/domains
+   432→```
+   433→
+   434→Header:
+   435→
+   436→``` text
+   437→Domains
+   438→
+   439→Manage and monitor all domains.
+   440→
+   441→[Search domain...]
+   442→
+   443→[All Status]
+   444→[All Environments]
+   445→
+   446→[+ Add Domain]
+   447→```
+   448→
+   449→Table:
+   450→
+   451→``` text
+   452→Domain
+   453→Registrar
+   454→SSL Expiry
+   455→Domain Expiry
+   456→Status
+   457→Automation
+   458→Last Checked
+   459→Actions
+   460→```
+   461→
+   462→Actions:
+   463→
+   464→``` text
+   465→View
+   466→Edit
+   467→Verify Now
+   468→Renew SSL
+   469→More
+   470→```
+   471→
+   472→More menu:
+   473→
+   474→``` text
+   475→Verify
+   476→Renew SSL
+   477→Install SSL
+   478→Disable Automation
+   479→View Logs
+   480→Delete
+   481→```
+   482→
+   483→Deletion must require confirmation.
+   484→
+   485→------------------------------------------------------------------------
+   486→
+   487→# 9. Add Domain
+   488→
+   489→Route:
+   490→
+   491→``` text
+   492→/domains/new
+   493→```
+   494→
+   495→Page title:
+   496→
+   497→``` text
+   498→Add New Domain
+   499→
+   500→Configure and verify domain and SSL settings.
+   501→```
+   502→
+   503→## Domain Information
+   504→
+   505→Fields:
+   506→
+   507→``` text
+   508→Domain Name
+   509→example.com
+   510→
+   511→Environment
+   512→Production / Staging / Development
+   513→
+   514→Registrar
+   515→GoDaddy / Namecheap / Cloudflare / Other / Unknown
+   516→
+   517→SSL Provider
+   518→Let's Encrypt / ZeroSSL / Existing Certificate / Other
+   519→```
+   520→
+   521→## Automation settings
+   522→
+   523→``` text
+   524→Auto Renewal
+   525→ON/OFF
+   526→
+   527→Auto Installation
+   528→ON/OFF
+   529→
+   530→DNS Automation
+   531→ON/OFF
+   532→```
+   533→
+   534→## Notifications
+   535→
+   536→Checkboxes:
+   537→
+   538→``` text
+   539→Email
+   540→WhatsApp
+   541→Telegram
+   542→Slack
+   543→```
+   544→
+   545→## Alert threshold
+   546→
+   547→Default:
+   548→
+   549→``` text
+   550→5 days
+   551→```
+   552→
+   553→Allow custom values.
+   554→
+   555→## Server assignment
+   556→
+   557→``` text
+   558→Server
+   559→Production Server 01
+   560→
+   561→Web Server
+   562→Nginx
+   563→```
+   564→
+   565→## Primary action
+   566→
+   567→``` text
+   568→[Add Domain & Verify]
+   569→```
+   570→
+   571→Do not simply save the domain.
+   572→
+   573→On submission:
+   574→
+   575→``` text
+   576→Create record
+   577→      ↓
+   578→Queue verification
+   579→      ↓
+   580→RDAP/domain check
+   581→      ↓
+   582→SSL check
+   583→      ↓
+   584→DNS check
+   585→      ↓
+   586→Return verification result
+   587→```
+   588→
+   589→------------------------------------------------------------------------
+   590→
+   591→# 10. Domain Verification Screen
+   592→
+   593→After adding a domain, show a verification workflow.
+   594→
+   595→Example:
+   596→
+   597→``` text
+   598→Verifying example.com
+   599→
+   600→✓ Domain reachable
+   601→✓ RDAP lookup complete
+   602→✓ Domain expiry discovered
+   603→✓ HTTPS reachable
+   604→✓ SSL certificate discovered
+   605→✓ Certificate hostname verified
+   606→✓ Certificate chain verified
+   607→✓ Dates stored
+   608→```
+   609→
+   610→Then show:
+   611→
+   612→``` text
+   613→Verification Result
+   614→
+   615→✓ Domain verified
+   616→✓ SSL verified
+   617→✓ Dates match
+   618→
+   619→[Continue]
+   620→```
+   621→
+   622→If mismatch:
+   623→
+   624→``` text
+   625→⚠ Verification requires attention
+   626→
+   627→Domain expiry mismatch
+   628→
+   629→RDAP:
+   630→2027-02-15
+   631→
+   632→Registrar:
+   633→2027-02-15
+   634→
+   635→Stored:
+   636→2027-01-15
+   637→
+   638→[Update Stored Date]
+   639→[Review]
+   640→```
+   641→
+   642→Never silently overwrite a manually verified value without showing an
+   643→audit entry.
+   644→
+   645→------------------------------------------------------------------------
+   646→
+   647→# 11. Domain Details
+   648→
+   649→Route:
+   650→
+   651→``` text
+   652→/domains/[id]
+   653→```
+   654→
+   655→Header:
+   656→
+   657→``` text
+   658→Back to Domains
+   659→
+   660→example.com
+   661→[Healthy]
+   662→
+   663→[Edit]
+   664→[Verify Now]
+   665→[More]
+   666→```
+   667→
+   668→Tabs:
+   669→
+   670→``` text
+   671→Overview
+   672→Domain
+   673→SSL Certificate
+   674→Server
+   675→History
+   676→```
+   677→
+   678→## Overview
+   679→
+   680→Top status panel:
+   681→
+   682→``` text
+   683→✓ Dates Verified
+   684→
+   685→Domain and SSL expiry dates are correct and up to date.
+   686→
+   687→Last checked:
+   688→09 Sep 2026 09:00
+   689→
+   690→[Recheck]
+   691→```
+   692→
+   693→## Domain information card
+   694→
+   695→``` text
+   696→Registrar
+   697→GoDaddy
+   698→
+   699→Registered
+   700→15 Feb 2024
+   701→
+   702→Expires
+   703→15 Feb 2027
+   704→
+   705→Status
+   706→Active
+   707→
+   708→Verification
+   709→Verified
+   710→
+   711→[View RDAP]
+   712→```
+   713→
+   714→## SSL card
+   715→
+   716→``` text
+   717→Issuer
+   718→Let's Encrypt
+   719→
+   720→Valid From
+   721→01 Aug 2026
+   722→
+   723→Valid Until
+   724→30 Oct 2026
+   725→
+   726→Days Remaining
+   727→51 days
+   728→
+   729→Status
+   730→Valid
+   731→
+   732→[View Certificate]
+   733→```
+   734→
+   735→## Server card
+   736→
+   737→``` text
+   738→Production Server 01
+   739→Nginx
+   740→Online
+   741→
+   742→Certificate Installed
+   743→Yes
+   744→
+   745→Last Deployment
+   746→09 Sep 2026
+   747→```
+   748→
+   749→------------------------------------------------------------------------
+   750→
+   751→# 12. SSL Certificates List
+   752→
+   753→Route:
+   754→
+   755→``` text
+   756→/certificates
+   757→```
+   758→
+   759→Columns:
+   760→
+   761→``` text
+   762→Certificate
+   763→Domain
+   764→Issuer
+   765→Valid From
+   766→Expires
+   767→Days Remaining
+   768→Status
+   769→Installation
+   770→Actions
+   771→```
+   772→
+   773→Status examples:
+   774→
+   775→``` text
+   776→Valid
+   777→Expiring
+   778→Expired
+   779→Hostname Mismatch
+   780→Invalid Chain
+   781→Deployment Failed
+   782→```
+   783→
+   784→Filters:
+   785→
+   786→``` text
+   787→All
+   788→Valid
+   789→Expiring
+   790→Expired
+   791→Errors
+   792→```
+   793→
+   794→------------------------------------------------------------------------
+   795→
+   796→# 13. SSL Certificate Details
+   797→
+   798→Route:
+   799→
+   800→``` text
+   801→/certificates/[id]
+   802→```
+   803→
+   804→Header:
+   805→
+   806→``` text
+   807→SSL Certificate - example.com
+   808→[Valid]
+   809→```
+   810→
+   811→Tabs:
+   812→
+   813→``` text
+   814→Overview
+   815→Certificate Details
+   816→Chain
+   817→Installation
+   818→History
+   819→```
+   820→
+   821→## Certificate details
+   822→
+   823→Display:
+   824→
+   825→``` text
+   826→Issuer
+   827→Let's Encrypt
+   828→
+   829→Type
+   830→ECDSA (P-256)
+   831→
+   832→Valid From
+   833→01 Aug 2026
+   834→
+   835→Expires
+   836→30 Oct 2026
+   837→
+   838→Serial Number
+   839→...
+   840→
+   841→Fingerprint
+   842→...
+   843→
+   844→Signature Algorithm
+   845→...
+   846→
+   847→TLS Version
+   848→TLS 1.2 / TLS 1.3
+   849→```
+   850→
+   851→## SAN section
+   852→
+   853→Show:
+   854→
+   855→``` text
+   856→example.com
+   857→www.example.com
+   858→```
+   859→
+   860→## Certificate status checks
+   861→
+   862→``` text
+   863→✓ Valid Certificate
+   864→✓ Hostname Match
+   865→✓ Chain Valid
+   866→✓ TLS Supported
+   867→```
+   868→
+   869→------------------------------------------------------------------------
+   870→
+   871→# 14. SSL Request / Renewal
+   872→
+   873→Route:
+   874→
+   875→``` text
+   876→/certificates/new
+   877→```
+   878→
+   879→Page:
+   880→
+   881→``` text
+   882→Request SSL Certificate
+   883→
+   884→Get a new SSL certificate from an ACME provider or use an existing certificate.
+   885→```
+   886→
+   887→Fields:
+   888→
+   889→``` text
+   890→Domain
+   891→example.com
+   892→
+   893→Certificate Provider
+   894→Let's Encrypt
+   895→
+   896→Certificate Type
+   897→Single Domain
+   898→Wildcard
+   899→Multi-Domain
+   900→
+   901→Validation
+   902→HTTP-01
+   903→DNS-01
+   904→
+   905→Install automatically
+   906→ON
+   907→```
+   908→
+   909→If DNS-01:
+   910→
+   911→``` text
+   912→DNS Provider
+   913→Cloudflare
+   914→
+   915→Zone
+   916→example.com
+   917→
+   918→[x] Automatically create DNS challenge record
+   919→```
+   920→
+   921→If installation enabled:
+   922→
+   923→``` text
+   924→Server
+   925→Production Server 01
+   926→
+   927→Web Server
+   928→Nginx
+   929→```
+   930→
+   931→Primary:
+   932→
+   933→``` text
+   934→[Request Certificate]
+   935→```
+   936→
+   937→------------------------------------------------------------------------
+   938→
+   939→# 15. Automatic SSL Renewal Workflow
+   940→
+   941→The worker should implement:
+   942→
+   943→``` text
+   944→Check certificate
+   945→        ↓
+   946→Days remaining <= renewal threshold?
+   947→        ↓
+   948→Request ACME renewal
+   949→        ↓
+   950→Perform validation
+   951→        ↓
+   952→Receive certificate
+   953→        ↓
+   954→Backup current certificate
+   955→        ↓
+   956→Install new certificate
+   957→        ↓
+   958→Test Nginx/Apache configuration
+   959→        ↓
+   960→Reload server
+   961→        ↓
+   962→Perform live HTTPS verification
+   963→        ↓
+   964→Success?
+   965→   /          \
+   966→ YES           NO
+   967→ ↓             ↓
+   968→Complete     Rollback
+   969→                ↓
+   970→             Alert
+   971→```
+   972→
+   973→Use a renewal threshold such as 30 days by default, while retaining the
+   974→mandatory 5-day alert.
+   975→
+   976→Do not wait until 5 days before starting renewal.
+   977→
+   978→------------------------------------------------------------------------
+   979→
+   980→# 16. Server Management
+   981→
+   982→Route:
+   983→
+   984→``` text
+   985→/servers
+   986→```
+   987→
+   988→Header:
+   989→
+   990→``` text
+   991→Servers
+   992→
+   993→Manage servers and SSH connections.
+   994→
+   995→[+ Add Server]
+   996→```
+   997→
+   998→Table:
+   999→
+  1000→``` text
+  1001→Name
+  1002→IP / Host
+  1003→Status
+  1004→Web Server
+  1005→Domains
+  1006→Last Check
+  1007→Actions
+  1008→```
+  1009→
+  1010→Example:
+  1011→
+  1012→``` text
+  1013→Production Server 01
+  1014→192.168.x.x
+  1015→Online
+  1016→Nginx
+  1017→14
+  1018→2 min ago
+  1019→
+  1020→Staging Server
+  1021→192.168.x.x
+  1022→Online
+  1023→Apache
+  1024→8
+  1025→4 min ago
+  1026→
+  1027→Backup Server
+  1028→192.168.x.x
+  1029→Offline
+  1030→Nginx
+  1031→2
+  1032→8 min ago
+  1033→```
+  1034→
+  1035→------------------------------------------------------------------------
+  1036→
+  1037→# 17. Add Server
+  1038→
+  1039→Fields:
+  1040→
+  1041→``` text
+  1042→Server Name
+  1043→Host
+  1044→Port
+  1045→Username
+  1046→
+  1047→Authentication
+  1048→SSH Key
+  1049→Password
+  1050→
+  1051→Web Server
+  1052→Nginx
+  1053→Apache
+  1054→
+  1055→Operating System
+  1056→Ubuntu
+  1057→Debian
+  1058→CentOS/RHEL
+  1059→Other
+  1060→```
+  1061→
+  1062→Never store plaintext passwords.
+  1063→
+  1064→Prefer encrypted SSH keys or a secret manager.
+  1065→
+  1066→Buttons:
+  1067→
+  1068→``` text
+  1069→[Test Connection]
+  1070→[Save Server]
+  1071→```
+  1072→
+  1073→------------------------------------------------------------------------
+  1074→
+  1075→# 18. Server Details
+  1076→
+  1077→Show:
+  1078→
+  1079→``` text
+  1080→Server status
+  1081→Online
+  1082→
+  1083→Operating System
+  1084→Ubuntu 24.04
+  1085→
+  1086→Web Server
+  1087→Nginx
+  1088→
+  1089→SSH
+  1090→Connected
+  1091→
+  1092→Domains
+  1093→14
+  1094→
+  1095→Certificates
+  1096→13
+  1097→
+  1098→Last Health Check
+  1099→2 min ago
+  1100→```
+  1101→
+  1102→Tabs:
+  1103→
+  1104→``` text
+  1105→Overview
+  1106→Domains
+  1107→Certificates
+  1108→Configuration
+  1109→Activity
+  1110→```
+  1111→
+  1112→Do not expose arbitrary shell execution in the UI.
+  1113→
+  1114→Use predefined operations only:
+  1115→
+  1116→``` text
+  1117→Test SSH
+  1118→Check Nginx
+  1119→Check Apache
+  1120→Install Certificate
+  1121→Reload Web Server
+  1122→Verify SSL
+  1123→```
+  1124→
+  1125→------------------------------------------------------------------------
+  1126→
+  1127→# 19. DNS Providers
+  1128→
+  1129→Route:
+  1130→
+  1131→``` text
+  1132→/dns
+  1133→```
+  1134→
+  1135→Initial providers:
+  1136→
+  1137→``` text
+  1138→Cloudflare
+  1139→```
+  1140→
+  1141→Future:
+  1142→
+  1143→``` text
+  1144→AWS Route 53
+  1145→GoDaddy
+  1146→Namecheap
+  1147→DigitalOcean
+  1148→Azure DNS
+  1149→Google Cloud DNS
+  1150→```
+  1151→
+  1152→Provider cards:
+  1153→
+  1154→``` text
+  1155→Cloudflare
+  1156→
+  1157→Connected
+  1158→12 zones
+  1159→
+  1160→[Manage]
+  1161→```
+  1162→
+  1163→Connection form:
+  1164→
+  1165→``` text
+  1166→Provider
+  1167→Cloudflare
+  1168→
+  1169→API Token
+  1170→**************
+  1171→
+  1172→Zone Access
+  1173→Selected zones / All zones
+  1174→
+  1175→[Test Connection]
+  1176→```
+  1177→
+  1178→Store API tokens encrypted.
+  1179→
+  1180→Never return the full token to the frontend.
+  1181→
+  1182→------------------------------------------------------------------------
+  1183→
+  1184→# 20. Notifications
+  1185→
+  1186→Route:
+  1187→
+  1188→``` text
+  1189→/notifications
+  1190→```
+  1191→
+  1192→Notification settings:
+  1193→
+  1194→## SSL expiry alerts
+  1195→
+  1196→Default:
+  1197→
+  1198→``` text
+  1199→30 days
+  1200→15 days
+  1201→7 days
+  1202→5 days
+  1203→```
+  1204→
+  1205→## Domain expiry alerts
+  1206→
+  1207→Default:
+  1208→
+  1209→``` text
+  1210→60 days
+  1211→30 days
+  1212→15 days
+  1213→7 days
+  1214→5 days
+  1215→```
+  1216→
+  1217→## Channels
+  1218→
+  1219→``` text
+  1220→Email
+  1221→WhatsApp
+  1222→Telegram
+  1223→Slack
+  1224→```
+  1225→
+  1226→Each channel should have:
+  1227→
+  1228→``` text
+  1229→Enabled
+  1230→Configuration
+  1231→Test Notification
+  1232→```
+  1233→
+  1234→------------------------------------------------------------------------
+  1235→
+  1236→# 21. Notification templates
+  1237→
+  1238→Example SSL warning:
+  1239→
+  1240→``` text
+  1241→SSL Certificate Expiring
+  1242→
+  1243→Domain: example.com
+  1244→Certificate: Let's Encrypt
+  1245→Expires: 14 Sep 2026
+  1246→Remaining: 5 days
+  1247→
+  1248→Automatic renewal:
+  1249→Enabled
+  1250→
+  1251→Server:
+  1252→Production Server 01
+  1253→```
+  1254→
+  1255→Critical alert:
+  1256→
+  1257→``` text
+  1258→CRITICAL: SSL Certificate Expires Tomorrow
+  1259→
+  1260→Domain:
+  1261→example.com
+  1262→
+  1263→Expires:
+  1264→10 Sep 2026
+  1265→
+  1266→Automatic renewal:
+  1267→FAILED
+  1268→
+  1269→Reason:
+  1270→DNS validation failed.
+  1271→
+  1272→Immediate action required.
+  1273→```
+  1274→
+  1275→------------------------------------------------------------------------
+  1276→
+  1277→# 22. Automation Logs
+  1278→
+  1279→Route:
+  1280→
+  1281→``` text
+  1282→/logs
+  1283→```
+  1284→
+  1285→Table:
+  1286→
+  1287→``` text
+  1288→Date
+  1289→Domain
+  1290→Action
+  1291→Status
+  1292→Duration
+  1293→Details
+  1294→```
+  1295→
+  1296→Actions:
+  1297→
+  1298→``` text
+  1299→Domain Check
+  1300→SSL Check
+  1301→SSL Renewal
+  1302→SSL Installation
+  1303→DNS Validation
+  1304→Server Check
+  1305→Notification
+  1306→Rollback
+  1307→```
+  1308→
+  1309→Statuses:
+  1310→
+  1311→``` text
+  1312→Success
+  1313→Running
+  1314→Failed
+  1315→Rolled Back
+  1316→Cancelled
+  1317→```
+  1318→
+  1319→Clicking an entry opens detailed logs.
+  1320→
+  1321→Example:
+  1322→
+  1323→``` text
+  1324→SSL Renewal - example.com
+  1325→
+  1326→09:01 Starting renewal
+  1327→09:01 ACME account verified
+  1328→09:01 DNS challenge created
+  1329→09:02 DNS validation completed
+  1330→09:02 Certificate issued
+  1331→09:02 Existing certificate backed up
+  1332→09:02 New certificate installed
+  1333→09:02 nginx -t
+  1334→09:02 Configuration valid
+  1335→09:02 Nginx reloaded
+  1336→09:03 HTTPS verification successful
+  1337→
+  1338→Result:
+  1339→✓ SUCCESS
+  1340→```
+  1341→
+  1342→------------------------------------------------------------------------
+  1343→
+  1344→# 23. Settings
+  1345→
+  1346→Tabs:
+  1347→
+  1348→``` text
+  1349→General
+  1350→Integrations
+  1351→Security
+  1352→Users
+  1353→System
+  1354→```
+  1355→
+  1356→## Integrations
+  1357→
+  1358→Show:
+  1359→
+  1360→``` text
+  1361→Let's Encrypt
+  1362→Connected
+  1363→
+  1364→Cloudflare
+  1365→Connected
+  1366→
+  1367→GoDaddy
+  1368→Not Connected
+  1369→
+  1370→Namecheap
+  1371→Not Connected
+  1372→
+  1373→Telegram
+  1374→Not Connected
+  1375→
+  1376→Slack
+  1377→Not Connected
+  1378→```
+  1379→
+  1380→## Security
+  1381→
+  1382→Settings:
+  1383→
+  1384→``` text
+  1385→Two-factor authentication
+  1386→Session timeout
+  1387→IP allowlist
+  1388→Login protection
+  1389→Audit logging
+  1390→```
+  1391→
+  1392→------------------------------------------------------------------------
+  1393→
+  1394→# 24. Reports
+  1395→
+  1396→Route:
+  1397→
+  1398→``` text
+  1399→/reports
+  1400→```
+  1401→
+  1402→Useful reports:
+  1403→
+  1404→``` text
+  1405→Domain Expiry Report
+  1406→SSL Expiry Report
+  1407→Failed Renewals
+  1408→Server Health
+  1409→Automation Success Rate
+  1410→Notification History
+  1411→```
+  1412→
+  1413→Allow:
+  1414→
+  1415→``` text
+  1416→Export CSV
+  1417→Export PDF
+  1418→```
+  1419→
+  1420→------------------------------------------------------------------------
+  1421→
+  1422→# 25. Domain Verification Engine
+  1423→
+  1424→Implement a service abstraction.
+  1425→
+  1426→``` ts
+  1427→interface DomainVerificationService {
+  1428→  verify(domain: string): Promise<DomainVerificationResult>;
+  1429→}
+  1430→```
+  1431→
+  1432→Result:
+  1433→
+  1434→``` ts
+  1435→interface DomainVerificationResult {
+  1436→  domain: string;
+  1437→  domainExpiry?: Date;
+  1438→  registrar?: string;
+  1439→  registrationStatus?: string;
+  1440→  source: string;
+  1441→  verified: boolean;
+  1442→  error?: string;
+  1443→}
+  1444→```
+  1445→
+  1446→Prefer RDAP over legacy WHOIS wherever available.
+  1447→
+  1448→Provider-specific registrar APIs should be optional adapters.
+  1449→
+  1450→------------------------------------------------------------------------
+  1451→
+  1452→# 26. SSL Inspection Engine
+  1453→
+  1454→Create:
+  1455→
+  1456→``` ts
+  1457→interface CertificateInspector {
+  1458→  inspect(domain: string, port?: number): Promise<CertificateInspection>;
+  1459→}
+  1460→```
+  1461→
+  1462→Inspect:
+  1463→
+  1464→``` text
+  1465→Subject
+  1466→Issuer
+  1467→SAN
+  1468→Valid From
+  1469→Valid Until
+  1470→Serial Number
+  1471→Fingerprint
+  1472→Signature Algorithm
+  1473→TLS Version
+  1474→Certificate Chain
+  1475→Hostname Match
+  1476→```
+  1477→
+  1478→The inspector must connect to the live endpoint and not rely on stored
+  1479→certificate data.
+  1480→
+  1481→------------------------------------------------------------------------
+  1482→
+  1483→# 27. SSL Provider Abstraction
+  1484→
+  1485→Use:
+  1486→
+  1487→``` ts
+  1488→interface CertificateProvider {
+  1489→  createCertificate(request: CertificateRequest): Promise<Certificate>;
+  1490→  renewCertificate(certificateId: string): Promise<Certificate>;
+  1491→  revokeCertificate(certificateId: string): Promise<void>;
+  1492→}
+  1493→```
+  1494→
+  1495→Initial implementation:
+  1496→
+  1497→``` text
+  1498→Let'sEncryptProvider
+  1499→```
+  1500→
+  1501→Future:
+  1502→
+  1503→``` text
+  1504→ZeroSSLProvider
+  1505→CustomACMEProvider
+  1506→```
+  1507→
+  1508→------------------------------------------------------------------------
+  1509→
+  1510→# 28. DNS Provider Abstraction
+  1511→
+  1512→Use:
+  1513→
+  1514→``` ts
+  1515→interface DNSProvider {
+  1516→  createRecord(input: DNSRecordInput): Promise<void>;
+  1517→  updateRecord(input: DNSRecordInput): Promise<void>;
+  1518→  deleteRecord(input: DNSRecordInput): Promise<void>;
+  1519→  findZone(domain: string): Promise<DNSZone>;
+  1520→}
+  1521→```
+  1522→
+  1523→Initial:
+  1524→
+  1525→``` text
+  1526→CloudflareProvider
+  1527→```
+  1528→
+  1529→------------------------------------------------------------------------
+  1530→
+  1531→# 29. Server Deployment Abstraction
+  1532→
+  1533→Use:
+  1534→
+  1535→``` ts
+  1536→interface ServerDeploymentProvider {
+  1537→  testConnection(serverId: string): Promise<TestResult>;
+  1538→
+  1539→  installCertificate(
+  1540→    serverId: string,
+  1541→    certificate: Certificate
+  1542→  ): Promise<DeploymentResult>;
+  1543→
+  1544→  testConfiguration(
+  1545→    serverId: string
+  1546→  ): Promise<TestResult>;
+  1547→
+  1548→  reloadWebServer(
+  1549→    serverId: string
+  1550→  ): Promise<TestResult>;
+  1551→
+  1552→  rollback(
+  1553→    serverId: string,
+  1554→    backupId: string
+  1555→  ): Promise<RollbackResult>;
+  1556→}
+  1557→```
+  1558→
+  1559→Initial:
+  1560→
+  1561→``` text
+  1562→SSH + Nginx
+  1563→SSH + Apache
+  1564→```
+  1565→
+  1566→------------------------------------------------------------------------
+  1567→
+  1568→# 30. Nginx Installation
+  1569→
+  1570→Controlled workflow:
+  1571→
+  1572→``` text
+  1573→Backup current certificate
+  1574→Backup current configuration
+  1575→Upload new certificate
+  1576→Upload private key
+  1577→Set secure file permissions
+  1578→Run nginx configuration test
+  1579→If valid:
+  1580→    reload nginx
+  1581→Else:
+  1582→    rollback
+  1583→Verify HTTPS
+  1584→```
+  1585→
+  1586→Never reload if configuration testing fails.
+  1587→
+  1588→------------------------------------------------------------------------
+  1589→
+  1590→# 31. Apache Installation
+  1591→
+  1592→Workflow:
+  1593→
+  1594→``` text
+  1595→Backup current certificate
+  1596→Backup configuration
+  1597→Install certificate
+  1598→Update VirtualHost if required
+  1599→Run apachectl configtest
+  1600→If valid:
+  1601→    reload Apache
+  1602→Else:
+  1603→    rollback
+  1604→Verify HTTPS
+  1605→```
+  1606→
+  1607→------------------------------------------------------------------------
+  1608→
+  1609→# 32. Security Requirements
+  1610→
+  1611→This is a security-sensitive application because it may control
+  1612→production servers.
+  1613→
+  1614→Implement:
+  1615→
+  1616→-   Strong authentication.
+  1617→-   Password hashing with Argon2id or equivalent.
+  1618→-   Optional/required 2FA for privileged users.
+  1619→-   Role-based access control.
+  1620→-   Secure HTTP-only cookies.
+  1621→-   CSRF protection where applicable.
+  1622→-   Strict CORS configuration.
+  1623→-   Rate limiting.
+  1624→-   Input validation with Zod.
+  1625→-   SQL injection protection through Prisma.
+  1626→-   XSS protection.
+  1627→-   Content Security Policy.
+  1628→-   HSTS.
+  1629→-   Secure headers.
+  1630→-   Encryption at rest for credentials.
+  1631→-   Secrets stored outside source code.
+  1632→-   Audit logging.
+  1633→-   SSH host-key verification.
+  1634→-   No arbitrary shell commands from user input.
+  1635→-   Command allowlisting.
+  1636→-   Least-privilege server accounts.
+  1637→
+  1638→Roles:
+  1639→
+  1640→``` text
+  1641→Owner
+  1642→Admin
+  1643→Operator
+  1644→Viewer
+  1645→```
+  1646→
+  1647→Permissions should include:
+  1648→
+  1649→``` text
+  1650→domains.read
+  1651→domains.write
+  1652→domains.delete
+  1653→
+  1654→certificates.read
+  1655→certificates.issue
+  1656→certificates.renew
+  1657→certificates.install
+  1658→
+  1659→servers.read
+  1660→servers.manage
+  1661→
+  1662→dns.read
+  1663→dns.manage
+  1664→
+  1665→notifications.manage
+  1666→
+  1667→users.manage
+  1668→settings.manage
+  1669→```
+  1670→
+  1671→------------------------------------------------------------------------
+  1672→
+  1673→# 33. Credential Security
+  1674→
+  1675→Sensitive values include:
+  1676→
+  1677→``` text
+  1678→SSH private keys
+  1679→SSH passwords
+  1680→DNS API tokens
+  1681→Registrar API credentials
+  1682→ACME account credentials
+  1683→Notification provider secrets
+  1684→```
+  1685→
+  1686→Never expose these through normal API responses.
+  1687→
+  1688→Recommended approach:
+  1689→
+  1690→``` text
+  1691→Application
+  1692→    ↓
+  1693→Encryption service
+  1694→    ↓
+  1695→Encrypted database value
+  1696→```
+  1697→
+  1698→Use a server-side encryption key from environment/secret management.
+  1699→
+  1700→For production, support external secret managers later:
+  1701→
+  1702→``` text
+  1703→AWS Secrets Manager
+  1704→Azure Key Vault
+  1705→HashiCorp Vault
+  1706→```
+  1707→
+  1708→------------------------------------------------------------------------
+  1709→
+  1710→# 34. Audit Logging
+  1711→
+  1712→Every sensitive action must be recorded.
+  1713→
+  1714→Example:
+  1715→
+  1716→``` text
+  1717→User:
+  1718→admin@example.com
+  1719→
+  1720→Action:
+  1721→SSL_INSTALL
+  1722→
+  1723→Domain:
+  1724→example.com
+  1725→
+  1726→Server:
+  1727→Production Server 01
+  1728→
+  1729→Result:
+  1730→SUCCESS
+  1731→
+  1732→IP:
+  1733→...
+  1734→
+  1735→Timestamp:
+  1736→...
+  1737→```
+  1738→
+  1739→Audit events:
+  1740→
+  1741→``` text
+  1742→LOGIN
+  1743→LOGOUT
+  1744→DOMAIN_CREATED
+  1745→DOMAIN_UPDATED
+  1746→DOMAIN_DELETED
+  1747→DOMAIN_VERIFIED
+  1748→SSL_INSPECTED
+  1749→SSL_REQUESTED
+  1750→SSL_RENEWED
+  1751→SSL_INSTALLED
+  1752→SSL_ROLLBACK
+  1753→SERVER_CREATED
+  1754→SERVER_UPDATED
+  1755→SERVER_CONNECTION_TESTED
+  1756→DNS_RECORD_CREATED
+  1757→DNS_RECORD_DELETED
+  1758→NOTIFICATION_SENT
+  1759→SETTINGS_UPDATED
+  1760→```
+  1761→
+  1762→------------------------------------------------------------------------
+  1763→
+  1764→# 35. Database Model
+  1765→
+  1766→Use Prisma.
+  1767→
+  1768→Suggested models:
+  1769→
+  1770→``` text
+  1771→User
+  1772→Role
+  1773→Domain
+  1774→Certificate
+  1775→CertificateDeployment
+  1776→Server
+  1777→DNSProvider
+  1778→DNSZone
+  1779→NotificationChannel
+  1780→NotificationRule
+  1781→Notification
+  1782→AutomationJob
+  1783→AuditLog
+  1784→VerificationResult
+  1785→CertificateHistory
+  1786→ServerBackup
+  1787→Integration
+  1788→```
+  1789→
+  1790→## Domain
+  1791→
+  1792→Suggested fields:
+  1793→
+  1794→``` text
+  1795→id
+  1796→hostname
+  1797→environment
+  1798→registrar
+  1799→registeredAt
+  1800→expiresAt
+  1801→verifiedExpiresAt
+  1802→status
+  1803→autoRenew
+  1804→autoInstall
+  1805→dnsAutomation
+  1806→serverId
+  1807→createdAt
+  1808→updatedAt
+  1809→lastCheckedAt
+  1810→```
+  1811→
+  1812→## Certificate
+  1813→
+  1814→``` text
+  1815→id
+  1816→domainId
+  1817→issuer
+  1818→subject
+  1819→serialNumber
+  1820→fingerprint
+  1821→validFrom
+  1822→validUntil
+  1823→sans
+  1824→signatureAlgorithm
+  1825→tlsVersion
+  1826→status
+  1827→provider
+  1828→createdAt
+  1829→updatedAt
+  1830→lastCheckedAt
+  1831→```
+  1832→
+  1833→## Server
+  1834→
+  1835→``` text
+  1836→id
+  1837→name
+  1838→host
+  1839→port
+  1840→username
+  1841→encryptedCredential
+  1842→authenticationType
+  1843→operatingSystem
+  1844→webServer
+  1845→status
+  1846→lastHealthCheck
+  1847→createdAt
+  1848→updatedAt
+  1849→```
+  1850→
+  1851→## AutomationJob
+  1852→
+  1853→``` text
+  1854→id
+  1855→type
+  1856→domainId
+  1857→certificateId
+  1858→serverId
+  1859→status
+  1860→startedAt
+  1861→completedAt
+  1862→error
+  1863→metadata
+  1864→createdAt
+  1865→```
+  1866→
+  1867→------------------------------------------------------------------------
+  1868→
+  1869→# 36. Job Queue Design
+  1870→
+  1871→Use separate queues:
+  1872→
+  1873→``` text
+  1874→domain-check
+  1875→ssl-check
+  1876→ssl-renewal
+  1877→ssl-installation
+  1878→dns-validation
+  1879→server-health
+  1880→notification
+  1881→```
+  1882→
+  1883→Daily scheduler:
+  1884→
+  1885→``` text
+  1886→Every day:
+  1887→    Queue domain checks
+  1888→    Queue SSL checks
+  1889→    Calculate expiry
+  1890→    Queue notifications
+  1891→    Queue eligible renewals
+  1892→```
+  1893→
+  1894→Renewal jobs should be idempotent.
+  1895→
+  1896→Do not create duplicate renewal jobs for the same certificate.
+  1897→
+  1898→Use distributed locks where required.
+  1899→
+  1900→------------------------------------------------------------------------
+  1901→
+  1902→# 37. Expiry Logic
+  1903→
+  1904→For every certificate:
+  1905→
+  1906→``` text
+  1907→daysRemaining =
+  1908→  certificate.validUntil - currentDate
+  1909→```
+  1910→
+  1911→Statuses:
+  1912→
+  1913→``` text
+  1914→> 30 days
+  1915→Healthy
+  1916→
+  1917→8–30 days
+  1918→Expiring Soon
+  1919→
+  1920→5–7 days
+  1921→Warning
+  1922→
+  1923→1–4 days
+  1924→Critical
+  1925→
+  1926→0 days
+  1927→Expired
+  1928→```
+  1929→
+  1930→Mandatory notification:
+  1931→
+  1932→``` text
+  1933→<= 5 days
+  1934→```
+  1935→
+  1936→For domains use configurable thresholds.
+  1937→
+  1938→------------------------------------------------------------------------
+  1939→
+  1940→# 38. Health Check Frequency
+  1941→
+  1942→Default:
+  1943→
+  1944→``` text
+  1945→Domain expiry:
+  1946→Daily
+  1947→
+  1948→SSL certificate:
+  1949→Daily
+  1950→
+  1951→Server health:
+  1952→Every 5–15 minutes
+  1953→
+  1954→DNS:
+  1955→On demand + during ACME validation
+  1956→```
+  1957→
+  1958→Allow administrators to customize schedules.
+  1959→
+  1960→------------------------------------------------------------------------
+  1961→
+  1962→# 39. API Design
+  1963→
+  1964→Suggested endpoints:
+  1965→
+  1966→``` text
+  1967→GET    /api/domains
+  1968→POST   /api/domains
+  1969→GET    /api/domains/:id
+  1970→PATCH  /api/domains/:id
+  1971→DELETE /api/domains/:id
+  1972→
+  1973→POST   /api/domains/:id/verify
+  1974→POST   /api/domains/:id/check-ssl
+  1975→
+  1976→GET    /api/certificates
+  1977→GET    /api/certificates/:id
+  1978→POST   /api/certificates/request
+  1979→POST   /api/certificates/:id/renew
+  1980→POST   /api/certificates/:id/install
+  1981→POST   /api/certificates/:id/verify
+  1982→POST   /api/certificates/:id/rollback
+  1983→
+  1984→GET    /api/servers
+  1985→POST   /api/servers
+  1986→PATCH  /api/servers/:id
+  1987→DELETE /api/servers/:id
+  1988→POST   /api/servers/:id/test
+  1989→POST   /api/servers/:id/health
+  1990→
+  1991→GET    /api/dns/providers
+  1992→POST   /api/dns/providers
+  1993→POST   /api/dns/providers/:id/test
+  1994→
+  1995→GET    /api/notifications
+  1996→PATCH  /api/notifications/settings
+  1997→
+  1998→GET    /api/logs
+  1999→GET    /api/reports
+  2000→```
+
+[showing lines 1-2000 of 3140; use offset=2001 with limit to continue reading]

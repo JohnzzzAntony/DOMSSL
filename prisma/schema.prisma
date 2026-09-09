@@ -1,0 +1,277 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Auth & Users ───────────────────────────
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String
+  passwordHash     String
+  role             String    @default("VIEWER") // OWNER | ADMIN | OPERATOR | VIEWER
+  twoFactorEnabled Boolean   @default(false)
+  isActive         Boolean   @default(true)
+  lastLoginAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  sessions         Session[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip        String?
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────────── Servers ───────────────────────────
+
+model Server {
+  id                  String                 @id @default(cuid())
+  name                String
+  host                String
+  port                Int                    @default(22)
+  username            String
+  authType            String                 @default("SSH_KEY") // SSH_KEY | PASSWORD
+  encryptedCredential String                 @default("") // AES-256-GCM ciphertext
+  operatingSystem     String                 @default("Ubuntu")
+  webServer           String                 @default("Nginx") // Nginx | Apache
+  status              String                 @default("UNKNOWN") // ONLINE | OFFLINE | UNKNOWN
+  sshVerified         Boolean                @default(false)
+  lastHealthCheck     DateTime?
+  isDemo              Boolean                @default(false)
+  domains             Domain[]
+  deployments         CertificateDeployment[]
+  backups             ServerBackup[]
+  jobs                AutomationJob[]
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+}
+
+// ─────────────────────────── Domains ───────────────────────────
+
+model Domain {
+  id                   String               @id @default(cuid())
+  hostname             String               @unique
+  environment          String               @default("PRODUCTION") // PRODUCTION | STAGING | DEVELOPMENT
+  registrar            String               @default("Unknown")
+  sslProvider          String               @default("Let's Encrypt")
+  registeredAt         DateTime?
+  expiresAt            DateTime? // stored (manually entered / imported) domain expiry
+  verifiedExpiresAt    DateTime? // verified authoritative domain expiry
+  registrarExpiresAt   DateTime? // last discovered via RDAP / registrar API
+  verificationStatus   String               @default("UNVERIFIED") // VERIFIED | MISMATCH | UNVERIFIED | FAILED
+  status               String               @default("PENDING") // HEALTHY | EXPIRING_SOON | WARNING | CRITICAL | EXPIRED | SSL_ERROR | DOMAIN_EXPIRING | PENDING
+  autoRenew            Boolean              @default(true)
+  autoInstall          Boolean              @default(true)
+  dnsAutomation        Boolean              @default(false)
+  notifyEmail          Boolean              @default(true)
+  notifyWhatsApp       Boolean              @default(false)
+  notifyTelegram       Boolean              @default(false)
+  notifySlack          Boolean              @default(false)
+  alertThresholdDays   Int                  @default(5)
+  isDemo               Boolean              @default(false)
+  serverId             String?
+  server               Server?              @relation(fields: [serverId], references: [id], onDelete: SetNull)
+  dnsProviderId        String?
+  certificates         Certificate[]
+  verificationResults  VerificationResult[]
+  jobs                 AutomationJob[]
+  lastCheckedAt        DateTime?
+  lastSslCheckAt       DateTime?
+  lastDomainCheckAt    DateTime?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+}
+
+// ─────────────────────────── Certificates ───────────────────────────
+
+model Certificate {
+  id                 String                  @id @default(cuid())
+  domainId           String?
+  domain             Domain?                 @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  commonName         String
+  issuer             String
+  subject            String
+  serialNumber       String?
+  fingerprint        String?
+  signatureAlgorithm String?
+  keyType            String? // ECDSA (P-256) | RSA (2048)
+  tlsVersion         String?
+  validFrom          DateTime
+  validUntil         DateTime
+  liveValidUntil     DateTime? // last live-inspected expiry
+  sans               String                  @default("[]") // JSON string[]
+  status             String                  @default("VALID") // VALID | EXPIRING | WARNING | CRITICAL | EXPIRED | HOSTNAME_MISMATCH | INVALID_CHAIN | DEPLOY_FAILED
+  hostnameMatch      Boolean                 @default(true)
+  chainValid         Boolean                 @default(true)
+  provider           String                  @default("Let's Encrypt")
+  installationStatus String                  @default("NOT_INSTALLED") // NOT_INSTALLED | INSTALLED | FAILED | ROLLED_BACK
+  autoRenew          Boolean                 @default(true)
+  verificationStatus String                  @default("UNVERIFIED") // VERIFIED | MISMATCH | UNVERIFIED
+  isDemo             Boolean                 @default(false)
+  lastCheckedAt      DateTime?
+  deployments        CertificateDeployment[]
+  history            CertificateHistory[]
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+}
+
+model CertificateDeployment {
+  id               String     @id @default(cuid())
+  certificateId    String
+  certificate      Certificate @relation(fields: [certificateId], references: [id], onDelete: Cascade)
+  serverId         String
+  server           Server     @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  status           String     @default("PENDING") // PENDING | INSTALLING | SUCCESS | FAILED | ROLLED_BACK
+  configTestPassed Boolean    @default(false)
+  liveVerified     Boolean    @default(false)
+  error            String?
+  backupId         String?
+  jobId            String?
+  createdAt        DateTime   @default(now())
+  completedAt      DateTime?
+}
+
+model CertificateHistory {
+  id            String      @id @default(cuid())
+  certificateId String
+  certificate   Certificate @relation(fields: [certificateId], references: [id], onDelete: Cascade)
+  event         String // ISSUED | RENEWED | INSTALLED | ROLLED_BACK | DETECTED_CHANGE | VERIFIED
+  detail        String?
+  actor         String      @default("system")
+  createdAt     DateTime    @default(now())
+}
+
+model ServerBackup {
+  id            String   @id @default(cuid())
+  serverId      String
+  server        Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  certificateId String?
+  label         String
+  path          String
+  encrypted     Boolean  @default(true)
+  createdAt     DateTime @default(now())
+}
+
+// ─────────────────────────── DNS ───────────────────────────
+
+model DNSProvider {
+  id             String    @id @default(cuid())
+  name           String    @default("Cloudflare")
+  providerType   String    @default("CLOUDFLARE")
+  encryptedToken String    @default("")
+  tokenLast4     String?
+  zoneAccess     String    @default("ALL_ZONES") // SELECTED_ZONES | ALL_ZONES
+  zones          String    @default("[]") // JSON string[]
+  status         String    @default("NOT_CONNECTED") // CONNECTED | NOT_CONNECTED | ERROR
+  lastTestedAt   DateTime?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+// ─────────────────────────── Notifications ───────────────────────────
+
+model NotificationChannel {
+  id            String    @id @default(cuid())
+  type          String    @unique // EMAIL | WHATSAPP | TELEGRAM | SLACK
+  enabled       Boolean   @default(false)
+  encryptedConf String    @default("") // AES-256-GCM ciphertext of JSON config
+  status        String    @default("NOT_CONNECTED") // CONNECTED | NOT_CONNECTED | ERROR
+  lastTestedAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Notification {
+  id             String   @id @default(cuid())
+  type           String // SSL_EXPIRY | DOMAIN_EXPIRY | RENEWAL_FAILED | SYSTEM | TEST
+  severity       String   @default("INFO") // INFO | WARNING | CRITICAL
+  title          String
+  message        String
+  domainId       String?
+  certificateId  String?
+  read           Boolean  @default(false)
+  deliveryStatus String   @default("PENDING") // PENDING | SENT | SIMULATED | FAILED
+  channels       String   @default("[]")
+  createdAt      DateTime @default(now())
+}
+
+// ─────────────────────────── Jobs & Audit ───────────────────────────
+
+model AutomationJob {
+  id            String    @id @default(cuid())
+  type          String // DOMAIN_CHECK | SSL_CHECK | SSL_RENEWAL | SSL_INSTALLATION | DNS_VALIDATION | SERVER_HEALTH | NOTIFICATION | VERIFICATION | ROLLBACK | BULK_SCAN
+  status        String    @default("QUEUED") // QUEUED | RUNNING | SUCCESS | FAILED | ROLLED_BACK | CANCELLED
+  title         String
+  domainId      String?
+  domain        Domain?   @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  certificateId String?
+  serverId      String?
+  server        Server?   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  steps         String    @default("[]") // JSON [{name,status,detail,at}]
+  logs          String    @default("[]") // JSON [{t,level,message}]
+  error         String?
+  durationMs    Int?
+  progress      Int       @default(0)
+  metadata      String    @default("{}")
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  actor        String   @default("system")
+  action       String // LOGIN | LOGOUT | DOMAIN_CREATED | ...
+  resourceType String?
+  resourceId   String?
+  detail       String?
+  ip           String?
+  result       String   @default("SUCCESS") // SUCCESS | FAILED
+  createdAt    DateTime @default(now())
+}
+
+model VerificationResult {
+  id              String   @id @default(cuid())
+  domainId        String
+  domain          Domain   @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  checkType       String // RDAP | REGISTRAR_API | SSL_LIVE | DNS | REACHABILITY
+  source          String // RDAP | LIVE | SIMULATION
+  verified        Boolean  @default(false)
+  discoveredValue String?
+  storedValue     String?
+  matched         Boolean?
+  error           String?
+  createdAt       DateTime @default(now())
+}
+
+// ─────────────────────────── Integrations & Settings ───────────────────────────
+
+model Integration {
+  id           String    @id @default(cuid())
+  key          String    @unique // LETS_ENCRYPT | CLOUDFLARE | GODADDY | NAMECHEAP | TELEGRAM | SLACK | SMTP
+  name         String
+  category     String    @default("OTHER") // CA | DNS | REGISTRAR | NOTIFICATION
+  status       String    @default("NOT_CONNECTED") // CONNECTED | NOT_CONNECTED
+  config       String    @default("{}")
+  lastTestedAt DateTime?
+  updatedAt    DateTime  @updatedAt
+}
+
+model Setting {
+  key       String   @id
+  value     String // JSON
+  updatedAt DateTime @updatedAt
+}
