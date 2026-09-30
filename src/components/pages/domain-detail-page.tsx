@@ -696,7 +696,7 @@ function EditDomainDialog({
             <Select value={registrar} onValueChange={setRegistrar}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {["GoDaddy", "Namecheap", "Cloudflare", "Porkbun", "Other", "Unknown"].map((r) => (
+                {Array.from(new Set([registrar, "GoDaddy", "Namecheap", "Cloudflare", "Porkbun", "Other", "Unknown"].filter(Boolean))).map((r) => (
                   <SelectItem key={r} value={r}>{r}</SelectItem>
                 ))}
               </SelectContent>
@@ -707,7 +707,7 @@ function EditDomainDialog({
             <Select value={sslProvider} onValueChange={setSslProvider}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {["Let's Encrypt", "ZeroSSL", "Existing Certificate", "Other"].map((p) => (
+                {Array.from(new Set([sslProvider, "Let's Encrypt", "Google Trust Services", "Sectigo", "DigiCert", "ZeroSSL", "Existing Certificate", "None", "Other"].filter(Boolean))).map((p) => (
                   <SelectItem key={p} value={p}>{p}</SelectItem>
                 ))}
               </SelectContent>

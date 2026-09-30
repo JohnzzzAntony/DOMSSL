@@ -1,6 +1,19 @@
 import { NextResponse } from "next/server";
-import { ApiError } from "@/lib/auth";
 import { z } from "zod";
+
+/**
+ * Structured API error — thrown inside route handlers and caught by structuredError().
+ */
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 /**
  * Standardized API responses + structured errors (spec §41).

@@ -3,9 +3,8 @@
 import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
-import { api, useHashRoute, type ApiUser } from "@/lib/client-api";
+import { useHashRoute, type ApiUser } from "@/lib/client-api";
 import { AppShell } from "@/components/app/app-shell";
-import { LoginPage } from "@/components/app/login-page";
 import { DashboardPage } from "@/components/pages/dashboard-page";
 import { DomainsPage } from "@/components/pages/domains-page";
 import { DomainNewPage } from "@/components/pages/domain-new-page";
@@ -21,8 +20,18 @@ import { LogsPage } from "@/components/pages/logs-page";
 import { ReportsPage } from "@/components/pages/reports-page";
 import { SettingsPage } from "@/components/pages/settings-page";
 
+/** Static public user — no authentication required. */
+const PUBLIC_USER: ApiUser = {
+  id: "public",
+  email: "public@certguard.local",
+  name: "CertGuard",
+  role: "OWNER",
+  twoFactorEnabled: false,
+};
+
 /**
  * CertGuard — Domain & SSL Manager (single-route SPA with hash routing).
+ * Authentication is disabled — all features are publicly accessible.
  * Route format: #/dashboard, #/domains, #/domains/:id, #/domains/new, etc.
  */
 export default function Home() {
@@ -45,39 +54,6 @@ export default function Home() {
 
 function App() {
   const { path, navigate } = useHashRoute();
-  const [user, setUser] = React.useState<ApiUser | null | undefined>(undefined); // undefined = loading
-
-  React.useEffect(() => {
-    api
-      .get<{ user: ApiUser | null }>("/api/auth/me")
-      .then((res) => setUser(res.user))
-      .catch(() => setUser(null));
-  }, []);
-
-  const logout = React.useCallback(async () => {
-    try {
-      await api.post("/api/auth/logout");
-    } finally {
-      setUser(null);
-      navigate("/dashboard");
-    }
-  }, [navigate]);
-
-  // Session check in flight
-  if (user === undefined) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-300 border-t-slate-800" />
-          <p className="text-sm text-muted-foreground">Loading CertGuard…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <LoginPage onLogin={(u) => setUser(u as ApiUser)} />;
-  }
 
   // ── Route resolution ────────────────────────────────────────────────
   const [routePath, queryString] = path.split("?");
@@ -128,15 +104,16 @@ function App() {
   } else if (segments[0] === "reports") {
     page = <ReportsPage />;
   } else if (segments[0] === "settings") {
-    page = <SettingsPage userRole={user.role} />;
+    page = <SettingsPage userRole={PUBLIC_USER.role} />;
   } else {
     page = <DashboardPage navigate={navigate} />;
     activePath = "/dashboard";
   }
 
   return (
-    <AppShell user={user} path={activePath} navigate={navigate} onLogout={logout}>
+    <AppShell user={PUBLIC_USER} path={activePath} navigate={navigate}>
       {page}
     </AppShell>
   );
 }
+

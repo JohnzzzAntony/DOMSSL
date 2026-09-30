@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { daysRemaining, sslStatusFromDays, domainStatusFromDays, severityToStatus, computeDomainStatus } from "@/lib/status";
 import { verifyDomainExpiry } from "@/lib/engines/rdap";
-import { inspectCertificate } from "@/lib/engines/ssl-inspector";
+import { inspectCertificate, isNoHttps, isTransientFailure, type CertificateInspection } from "@/lib/engines/ssl-inspector";
 import { getCertificateProvider } from "@/lib/engines/providers/acme";
 import { executeInstallWorkflow, generateSimulatedCertFiles } from "@/lib/engines/providers/ssh-deployment";
 import { formatSSLExpiryMessage, formatDomainExpiryMessage, sendNotification } from "@/lib/engines/notifications";
@@ -72,6 +72,8 @@ export async function createJob(params: {
   serverId?: string | null;
   steps?: string[];
   metadata?: Record<string, unknown>;
+  /** Delay before execution — used to stagger bulk imports (registry rate limits). */
+  delayMs?: number;
 }): Promise<string> {
   const job = await db.automationJob.create({
     data: {
@@ -90,7 +92,7 @@ export async function createJob(params: {
   // Kick off execution asynchronously — never block the HTTP request (spec §3)
   setTimeout(() => {
     runJob(job.id).catch((e) => console.error("[job] fatal", job.id, e));
-  }, 50);
+  }, params.delayMs ?? 50);
   return job.id;
 }
 
@@ -206,6 +208,42 @@ async function getSettings(): Promise<{ sslThresholds: number[]; domainThreshold
   return { sslThresholds, domainThresholds, renewalThresholdDays };
 }
 
+/** Issuing CA shown as the domain's SSL provider (e.g. "Let's Encrypt"). */
+function sslProviderOf(ssl: CertificateInspection): string | undefined {
+  return ssl.issuerOrg || ssl.issuer || undefined;
+}
+
+/**
+ * Roll-up SSL state for computeDomainStatus. A transient failure on a domain
+ * with a known certificate keeps the stored certificate authoritative.
+ */
+function sslStatusOf(ssl: CertificateInspection, hasStoredCertificate = false): string | null {
+  if (hasStoredCertificate && isTransientFailure(ssl)) return null;
+  if (ssl.reachable) {
+    if (ssl.hostnameMatch === false) return "HOSTNAME_MISMATCH";
+    if (ssl.chainValid === false) return "INVALID_CHAIN";
+    return null;
+  }
+  if (ssl.source !== "LIVE") return null;
+  return isNoHttps(ssl) ? "NO_SSL" : "SSL_ERROR";
+}
+
+/** Persist registrar + SSL provider discovered by a check. */
+async function recordProviders(
+  domain: { id: string; registrar: string; sslProvider: string },
+  registrar: string | undefined,
+  ssl: CertificateInspection | null,
+  hadCertificate: boolean
+): Promise<void> {
+  const data: { registrar?: string; sslProvider?: string } = {};
+  if (registrar && registrar !== domain.registrar) data.registrar = registrar;
+  if (ssl) {
+    const provider = ssl.validUntil ? sslProviderOf(ssl) : hadCertificate ? undefined : isNoHttps(ssl) ? "None" : "Unknown";
+    if (provider && provider !== domain.sslProvider) data.sslProvider = provider;
+  }
+  if (Object.keys(data).length) await db.domain.update({ where: { id: domain.id }, data });
+}
+
 const HANDLERS: Record<JobType, Handler> = {
   // ── Full verification pipeline (spec §10, §2): RDAP → SSL → DNS → compare
   async VERIFICATION(ctx, payload) {
@@ -239,7 +277,7 @@ const HANDLERS: Record<JobType, Handler> = {
     const rdapMs = Date.now() - rdapStart;
     await ctx.step(0, {
       status: "DONE",
-      detail: `Target resolved (${rdap.source === "RDAP" ? "public DNS" : "simulation cache"})`,
+      detail: `Target resolved (${rdap.source === "SIMULATION" ? "simulation cache" : "public DNS"})`,
       at: new Date().toISOString(),
     });
     await ctx.step(1, {
@@ -348,7 +386,7 @@ const HANDLERS: Record<JobType, Handler> = {
         await db.certificate.update({
           where: { id: existing.id },
           data: {
-            issuer: ssl.issuer || existing.issuer,
+            issuer: sslProviderOf(ssl) || existing.issuer,
             subject: ssl.subject || existing.subject,
             serialNumber: ssl.serialNumber,
             fingerprint: ssl.fingerprint,
@@ -392,8 +430,8 @@ const HANDLERS: Record<JobType, Handler> = {
         const cert = await db.certificate.create({
           data: {
             domainId: domain.id,
-            commonName: domain.hostname,
-            issuer: ssl.issuer || "Unknown",
+            commonName: ssl.inspectedHost || domain.hostname,
+            issuer: sslProviderOf(ssl) || "Unknown",
             subject: ssl.subject || domain.hostname,
             serialNumber: ssl.serialNumber,
             fingerprint: ssl.fingerprint,
@@ -421,6 +459,9 @@ const HANDLERS: Record<JobType, Handler> = {
         });
       }
     }
+
+    await recordProviders(domain, rdap.registrar, ssl, !!domain.certificates[0]);
+    if (ssl.inspectedHost) await ctx.log("info", `Apex serves no HTTPS — certificate read from ${ssl.inspectedHost}`);
 
     // 6. Compare & store dates — never silently overwrite (spec §49, §64.2)
     const domainMatch = compareDates(domain.expiresAt, rdap.domainExpiry);
@@ -483,10 +524,10 @@ const HANDLERS: Record<JobType, Handler> = {
 
     // 7. Roll up status
     const status = computeDomainStatus({
-      verificationStatus,
+      verificationStatus: verificationStatus === "FAILED" && domain.verificationStatus === "VERIFIED" ? "VERIFIED" : verificationStatus,
       domainExpiresAt: (rdap.domainExpiry || domain.expiresAt) ?? null,
       sslExpiresAt: sslExpiryForStatus || domain.certificates[0]?.validUntil || null,
-      sslStatus: !ssl.reachable && ssl.source === "LIVE" ? "SSL_ERROR" : null,
+      sslStatus: sslStatusOf(ssl, !!domain.certificates[0]),
     });
     await db.domain.update({
       where: { id: domain.id },
@@ -511,6 +552,7 @@ const HANDLERS: Record<JobType, Handler> = {
       registrar: domain.registrar,
       forceSimulation: domain.isDemo,
     });
+    await recordProviders(domain, rdap.registrar, null, true);
     if (rdap.verified && rdap.domainExpiry) {
       const match = compareDates(domain.verifiedExpiresAt || domain.expiresAt, rdap.domainExpiry);
       await db.domain.update({
@@ -564,61 +606,70 @@ const HANDLERS: Record<JobType, Handler> = {
       preset: sslPreset,
     });
     const cert = domain.certificates[0];
+    await recordProviders(domain, undefined, ssl, !!cert);
     if (ssl.validUntil) {
+      const liveData = {
+        issuer: sslProviderOf(ssl) || "Unknown",
+        subject: ssl.subject || domain.hostname,
+        serialNumber: ssl.serialNumber,
+        fingerprint: ssl.fingerprint,
+        signatureAlgorithm: ssl.signatureAlgorithm,
+        keyType: ssl.keyType,
+        tlsVersion: ssl.tlsVersion,
+        validFrom: ssl.validFrom || new Date(),
+        validUntil: ssl.validUntil,
+        liveValidUntil: ssl.validUntil,
+        sans: JSON.stringify(ssl.sans || []),
+        hostnameMatch: ssl.hostnameMatch ?? true,
+        chainValid: ssl.chainValid ?? true,
+        status: !ssl.hostnameMatch ? "HOSTNAME_MISMATCH" : !ssl.chainValid ? "INVALID_CHAIN" : severityToStatus(sslStatusFromDays(daysRemaining(ssl.validUntil)), "SSL"),
+        verificationStatus: "VERIFIED",
+        lastCheckedAt: new Date(),
+      };
       if (cert) {
-        await db.certificate.update({
-          where: { id: cert.id },
-          data: {
-            liveValidUntil: ssl.validUntil,
-            status: !ssl.hostnameMatch ? "HOSTNAME_MISMATCH" : !ssl.chainValid ? "INVALID_CHAIN" : severityToStatus(sslStatusFromDays(daysRemaining(ssl.validUntil)), "SSL"),
-            hostnameMatch: ssl.hostnameMatch ?? true,
-            chainValid: ssl.chainValid ?? true,
-            verificationStatus: compareDates(cert.validUntil, ssl.validUntil) === "MATCH" ? "VERIFIED" : "MISMATCH",
-            lastCheckedAt: new Date(),
-          },
-        });
+        // The live certificate is authoritative — adopt renewals (history preserved §50).
+        const changed = fmt(cert.validUntil) !== fmt(ssl.validUntil);
+        await db.certificate.update({ where: { id: cert.id }, data: liveData });
+        if (changed) {
+          await db.certificateHistory.create({
+            data: { certificateId: cert.id, event: "DETECTED_CHANGE", detail: `Live certificate changed: ${fmt(cert.validUntil)} → ${fmt(ssl.validUntil)} (${ssl.source})` },
+          });
+          await ctx.log("warn", `Certificate changed on ${domain.hostname}: ${fmt(cert.validUntil)} → ${fmt(ssl.validUntil)}`);
+        }
       } else {
         const created = await db.certificate.create({
           data: {
+            ...liveData,
             domainId: domain.id,
-            commonName: domain.hostname,
-            issuer: ssl.issuer || "Unknown",
-            subject: ssl.subject || domain.hostname,
-            serialNumber: ssl.serialNumber,
-            fingerprint: ssl.fingerprint,
-            signatureAlgorithm: ssl.signatureAlgorithm,
-            keyType: ssl.keyType,
-            tlsVersion: ssl.tlsVersion,
-            validFrom: ssl.validFrom || new Date(),
-            validUntil: ssl.validUntil,
-            liveValidUntil: ssl.validUntil,
-            sans: JSON.stringify(ssl.sans || []),
-            hostnameMatch: ssl.hostnameMatch ?? true,
-            chainValid: ssl.chainValid ?? true,
+            commonName: ssl.inspectedHost || domain.hostname,
             isDemo: ssl.source === "SIMULATION",
-            lastCheckedAt: new Date(),
           },
         });
         await db.certificateHistory.create({
           data: { certificateId: created.id, event: "DETECTED_CHANGE", detail: `Certificate discovered via SSL check (${ssl.source})` },
         });
       }
-      await db.domain.update({
-        where: { id: domain.id },
-        data: { lastSslCheckAt: new Date(), lastCheckedAt: new Date(), status: computeDomainStatus({
-          verificationStatus: domain.verificationStatus,
-          domainExpiresAt: domain.expiresAt,
-          sslExpiresAt: ssl.validUntil,
-        }) },
-      });
       await ctx.step(0, {
         status: ssl.hostnameMatch && ssl.chainValid ? "DONE" : "FAILED",
-        detail: `${ssl.issuer} — valid until ${fmt(ssl.validUntil)}, ${daysRemaining(ssl.validUntil)} days remaining [${ssl.source}]`,
+        detail: `${sslProviderOf(ssl)} — valid until ${fmt(ssl.validUntil)}, ${daysRemaining(ssl.validUntil)} days remaining [${ssl.source}]${ssl.inspectedHost ? ` (via ${ssl.inspectedHost})` : ""}`,
         at: new Date().toISOString(),
       });
     } else {
       await ctx.step(0, { status: "FAILED", detail: ssl.error || "No certificate discovered", at: new Date().toISOString() });
     }
+    await db.domain.update({
+      where: { id: domain.id },
+      data: {
+        lastCheckedAt: new Date(),
+        lastSslCheckAt: ssl.reachable ? new Date() : domain.lastSslCheckAt,
+        status: computeDomainStatus({
+          verificationStatus: domain.verificationStatus,
+          domainExpiresAt: domain.expiresAt,
+          sslExpiresAt: ssl.validUntil ?? cert?.validUntil ?? null,
+          sslStatus: sslStatusOf(ssl, !!cert),
+        }),
+      },
+    });
     await ctx.complete();
   },
 
@@ -1067,14 +1118,26 @@ const HANDLERS: Record<JobType, Handler> = {
   },
 };
 
+export const VERIFICATION_STEPS = [
+  "Domain reachable",
+  "RDAP lookup",
+  "Domain expiry discovered",
+  "HTTPS reachable",
+  "SSL certificate discovered",
+  "Certificate hostname verified",
+  "Certificate chain verified",
+  "Dates compared & stored",
+];
+
 // Exported daily-check helper used by the scheduler
 export async function queueDailyChecks(): Promise<{ domains: number; certs: number }> {
   const settings = await getSettings();
   const domains = await db.domain.findMany({ include: { certificates: { where: { status: { not: "REVOKED" } } } } });
   let certCount = 0;
-  for (const d of domains) {
-    await createJob({ type: "DOMAIN_CHECK", title: `Domain Check — ${d.hostname}`, domainId: d.id, steps: ["RDAP domain expiry check"] });
-    await createJob({ type: "SSL_CHECK", title: `SSL Check — ${d.hostname}`, domainId: d.id, steps: ["Live TLS handshake & certificate inspection"] });
+  for (const [i, d] of domains.entries()) {
+    // Staggered (3s per domain) so RDAP/WHOIS registries don't rate-limit or blacklist us.
+    await createJob({ type: "DOMAIN_CHECK", title: `Domain Check — ${d.hostname}`, domainId: d.id, steps: ["RDAP domain expiry check"], delayMs: i * 3000 });
+    await createJob({ type: "SSL_CHECK", title: `SSL Check — ${d.hostname}`, domainId: d.id, steps: ["Live TLS handshake & certificate inspection"], delayMs: i * 3000 + 1500 });
     certCount += d.certificates.length;
     // Notification thresholds + auto-renewal eligibility evaluated per cert
     for (const cert of d.certificates) {
@@ -1109,7 +1172,7 @@ export async function queueDailyChecks(): Promise<{ domains: number; certs: numb
       await sendNotification({
         type: "SSL_EXPIRY",
         severity: sslDays <= 5 ? "CRITICAL" : "WARNING",
-        ...(d.certificates[0] ? formatSSLExpiryMessage({ hostname: d.hostname, issuer: d.certificates[0].issuer, validUntil: d.certificates[0].validUntil, autoRenew: cert.autoRenew && d.autoRenew, serverName: d.serverId ? (await db.server.findUnique({ where: { id: d.serverId } }))?.name : null }) : { title: `SSL expiring — ${d.hostname}`, message: `Expires in ${sslDays} days` }),
+        ...(d.certificates[0] ? formatSSLExpiryMessage({ hostname: d.hostname, issuer: d.certificates[0].issuer, validUntil: d.certificates[0].validUntil, autoRenew: d.certificates[0].autoRenew && d.autoRenew, serverName: d.serverId ? (await db.server.findUnique({ where: { id: d.serverId } }))?.name : null }) : { title: `SSL expiring — ${d.hostname}`, message: `Expires in ${sslDays} days` }),
         domainId: d.id,
         certificateId: d.certificates[0]?.id,
         channels,

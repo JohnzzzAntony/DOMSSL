@@ -36,6 +36,25 @@ export interface CertificateInspection {
   error?: string;
   errorCode?: string;
   pem?: string;
+  /** Host actually inspected when it differs from `domain` (www fallback). */
+  inspectedHost?: string;
+}
+
+/** Network-level failures: nothing is serving HTTPS (parked / redirect-only / no DNS). */
+const NO_HTTPS_CODES = new Set([
+  "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH",
+  "ENETUNREACH", "ETIMEDOUT", "SSL_CONNECTION_TIMEOUT",
+]);
+
+export function isNoHttps(ssl: CertificateInspection): boolean {
+  return !ssl.reachable && NO_HTTPS_CODES.has(ssl.errorCode ?? "");
+}
+
+/** Failures that may clear up on their own (slow host, DNS hiccup). */
+const TRANSIENT_CODES = new Set(["SSL_CONNECTION_TIMEOUT", "ETIMEDOUT", "EAI_AGAIN", "ECONNRESET"]);
+
+export function isTransientFailure(ssl: CertificateInspection): boolean {
+  return !ssl.reachable && TRANSIENT_CODES.has(ssl.errorCode ?? "");
 }
 
 function inspectLive(domain: string, port: number, timeoutMs = 8000): Promise<CertificateInspection> {
@@ -59,7 +78,7 @@ function inspectLive(domain: string, port: number, timeoutMs = 8000): Promise<Ce
           let current: tls.PeerCertificate | null = cert;
           const chainPems: string[] = [];
           const seen = new Set<string>();
-          while (current && !seen.has(current.fingerprint)) {
+          while (current?.raw && !seen.has(current.fingerprint)) {
             seen.add(current.fingerprint);
             chainPems.push(
               `-----BEGIN CERTIFICATE-----\n${current.raw.toString("base64").replace(/(.{64})/g, "$1\n")}\n-----END CERTIFICATE-----`
@@ -225,13 +244,12 @@ export async function inspectCertificate(
   }
   if (opts.forceSimulation) return simulateInspection(domain, opts.preset);
 
-  // Quick TCP reachability probe first (fast fail)
+  // Real domains never get a fabricated certificate — report the failure.
   const live = await inspectLive(domain, port);
-  if (live.reachable) return live;
-
-  // Live check failed → simulation fallback, clearly labelled
-  const sim = simulateInspection(domain, opts.preset);
-  sim.error = live.error;
-  sim.errorCode = live.errorCode;
-  return sim;
+  if (live.reachable || domain.startsWith("www.") || !isNoHttps(live)) return live;
+  // Apex serves no HTTPS — many sites only serve TLS on www.
+  let www = await inspectLive(`www.${domain}`, port);
+  if (isTransientFailure(www)) www = await inspectLive(`www.${domain}`, port);
+  if (www.reachable) return { ...www, domain, inspectedHost: `www.${domain}` };
+  return { ...live, error: `${live.error}; www.${domain}: ${www.errorCode ?? www.error}` };
 }

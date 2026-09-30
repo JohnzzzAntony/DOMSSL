@@ -93,8 +93,9 @@ export const domainCreateSchema = z.object({
     .toLowerCase()
     .refine(isValidHostname, "Enter a valid domain name (e.g. example.com)"),
   environment: environmentEnum.default("PRODUCTION"),
-  registrar: registrarEnum.default("Unknown"),
-  sslProvider: sslProviderEnum.default("Let's Encrypt"),
+  // Free text: authoritative values come from RDAP/WHOIS/live TLS (e.g. "NameCheap, Inc.").
+  registrar: z.string().trim().min(1).max(100).default("Unknown"),
+  sslProvider: z.string().trim().min(1).max(100).default("Let's Encrypt"),
   storedDomainExpiry: z.string().optional(), // ISO date, manual entry
   autoRenew: z.boolean().default(true),
   autoInstall: z.boolean().default(true),
@@ -115,7 +116,9 @@ export const bulkScanSchema = z.object({
   domains: z
     .array(z.string().trim().toLowerCase().refine(isValidHostname, "Invalid domain name"))
     .min(1, "Provide at least one domain")
-    .max(50, "Scan up to 50 domains at a time"),
+    .max(100, "Scan up to 100 domains at a time"),
+  /** Also add every scanned domain to monitoring (skips ones already tracked). */
+  addToMonitoring: z.boolean().default(false),
 });
 
 // ─── Server schemas ──────────────────────────────────────────────────

@@ -32,6 +32,7 @@ export async function GET(req: Request) {
         if (status === "EXPIRING_SOON" && !["EXPIRING_SOON", "WARNING", "DOMAIN_EXPIRING"].includes(d.status)) return false;
         if (status === "CRITICAL" && !["CRITICAL", "EXPIRED"].includes(d.status)) return false;
         if (status === "SSL_ERROR" && d.status !== "SSL_ERROR") return false;
+        if (status === "NO_SSL" && d.status !== "NO_SSL") return false;
         if (status === "UNVERIFIED" && d.verificationStatus === "VERIFIED") return false;
         if (status === "MISMATCH" && d.verificationStatus !== "MISMATCH") return false;
         if (status === "AUTOMATION_ON" && !(d.autoRenew || d.autoInstall)) return false;

@@ -10,6 +10,7 @@ import {
   Clock,
   Play,
   HelpCircle,
+  Globe,
   ShieldCheck,
   Undo2,
   Loader2,
@@ -44,6 +45,7 @@ const STATUS_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   RUNNING: Loader2,
   QUEUED: Clock,
   UNVERIFIED: HelpCircle,
+  NO_SSL: Globe,
   NOT_CONNECTED: HelpCircle,
   NOT_INSTALLED: HelpCircle,
   UNKNOWN: HelpCircle,
@@ -67,6 +69,7 @@ const STATUS_LABELS: Record<string, string> = {
   VERIFIED: "Verified",
   MISMATCH: "Mismatch",
   UNVERIFIED: "Unverified",
+  NO_SSL: "No HTTPS",
   FAILED: "Failed",
   PENDING: "Pending",
   EXPIRING_SOON: "Expiring Soon",
@@ -100,7 +103,7 @@ export function statusTone(status: string): string {
     INSTALLED: "green", SUCCESS: "green", VALID: "green",
     EXPIRING_SOON: "amber", DOMAIN_EXPIRING: "amber", WARNING: "amber", EXPIRING: "amber",
     PENDING: "blue", RUNNING: "blue", QUEUED: "blue",
-    UNVERIFIED: "gray", NOT_CONNECTED: "gray", NOT_INSTALLED: "gray", UNKNOWN: "gray", CANCELLED: "gray",
+    UNVERIFIED: "gray", NO_SSL: "gray", NOT_CONNECTED: "gray", NOT_INSTALLED: "gray", UNKNOWN: "gray", CANCELLED: "gray",
     MANUAL_ACTION: "purple", ROLLED_BACK: "purple",
   };
   return map[status] || "red";

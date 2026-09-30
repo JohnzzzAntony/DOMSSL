@@ -49,6 +49,7 @@ const STATUS_FILTERS = [
   { value: "EXPIRING_SOON", label: "Expiring Soon" },
   { value: "CRITICAL", label: "Critical / Expired" },
   { value: "SSL_ERROR", label: "SSL Errors" },
+  { value: "NO_SSL", label: "No HTTPS" },
   { value: "UNVERIFIED", label: "Unverified" },
   { value: "MISMATCH", label: "Date Mismatch" },
   { value: "AUTOMATION_ON", label: "Automation ON" },
@@ -80,7 +81,7 @@ export function DomainsPage({
   const [status, setStatus] = React.useState(initialStatus || "ALL");
   const [environment, setEnvironment] = React.useState("ALL");
   const [bulkOpen, setBulkOpen] = React.useState(!!openBulk);
-  const [bulkInput, setBulkInput] = React.useState("example.com\nexample.org\nexample.net\niana.org");
+  const [bulkInput, setBulkInput] = React.useState("");
   const [bulkJob, setBulkJob] = React.useState<JobRow | null>(null);
   const [bulkRunning, setBulkRunning] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<DomainRow | null>(null);
@@ -99,11 +100,36 @@ export function DomainsPage({
     if (openBulk) setBulkOpen(true);
   }, [openBulk]);
 
+  const parseBulkInput = () =>
+    bulkInput
+      .split(/[\s,]+/)
+      .map((s) => s.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
+      .filter((s) => s.includes("."));
+
+  const runBulkImport = async () => {
+    const domains = parseBulkInput();
+    if (!domains.length) {
+      toast.error("Enter at least one domain");
+      return;
+    }
+    setBulkRunning(true);
+    try {
+      const res = await api.post<{ added: string[]; skipped: string[] }>("/api/domains/bulk-scan", { domains, addToMonitoring: true });
+      toast.success(
+        `${res.added.length} domain${res.added.length === 1 ? "" : "s"} added — verification running` +
+          (res.skipped.length ? ` (${res.skipped.length} already monitored)` : "")
+      );
+      queryClient.invalidateQueries({ queryKey: ["domains"] });
+      setBulkOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Bulk import failed");
+    } finally {
+      setBulkRunning(false);
+    }
+  };
+
   const runBulkScan = async () => {
-    const domains = bulkInput
-      .split("\n")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
+    const domains = parseBulkInput();
     if (!domains.length) {
       toast.error("Enter at least one domain");
       return;
@@ -240,6 +266,7 @@ export function DomainsPage({
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="pl-6">Domain</TableHead>
                     <TableHead>Registrar</TableHead>
+                    <TableHead>SSL Provider</TableHead>
                     <TableHead>SSL Expiry</TableHead>
                     <TableHead>Domain Expiry</TableHead>
                     <TableHead>Status</TableHead>
@@ -268,6 +295,7 @@ export function DomainsPage({
                         <p className="text-[11px] text-muted-foreground">{d.environment}</p>
                       </TableCell>
                       <TableCell className="text-sm">{d.registrar}</TableCell>
+                      <TableCell className="text-sm">{d.sslProvider}</TableCell>
                       <TableCell><DaysBadge days={d.sslDays} kind="SSL" /></TableCell>
                       <TableCell><DaysBadge days={d.domainDays} kind="DOMAIN" /></TableCell>
                       <TableCell className="space-y-1">
@@ -322,19 +350,19 @@ export function DomainsPage({
 
       {/* Bulk scanner dialog (spec §48) */}
       <Dialog open={bulkOpen} onOpenChange={(open) => { setBulkOpen(open); if (!open) onBulkConsumed?.(); }}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ScanLine className="h-5 w-5" /> Scan Multiple Domains
             </DialogTitle>
             <DialogDescription>
-              Run RDAP + live SSL checks against a list of domains before importing them.
+              Paste domains, one per line. Scan Only runs RDAP + live SSL checks; Add to Monitoring imports them and verifies each one.
             </DialogDescription>
           </DialogHeader>
           <Textarea
             value={bulkInput}
             onChange={(e) => setBulkInput(e.target.value)}
-            rows={5}
+            rows={8}
             placeholder={"example.com\nexample.org\nexample.net"}
             className="font-mono text-sm"
             aria-label="Domains to scan, one per line"
@@ -360,8 +388,11 @@ export function DomainsPage({
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setBulkOpen(false)}>Close</Button>
-            <Button onClick={runBulkScan} disabled={bulkRunning}>
-              {bulkRunning ? "Scanning…" : "Start Scan"}
+            <Button variant="secondary" onClick={runBulkScan} disabled={bulkRunning}>
+              {bulkRunning ? "Working…" : "Scan Only"}
+            </Button>
+            <Button onClick={runBulkImport} disabled={bulkRunning}>
+              <Plus className="mr-1 h-4 w-4" /> Add to Monitoring
             </Button>
           </DialogFooter>
         </DialogContent>

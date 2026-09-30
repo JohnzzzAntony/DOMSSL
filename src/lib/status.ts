@@ -99,6 +99,7 @@ export const STATUS_META: Record<
   RUNNING: { label: "Running", tone: "blue" },
   QUEUED: { label: "Queued", tone: "blue" },
   UNVERIFIED: { label: "Unverified", tone: "gray" },
+  NO_SSL: { label: "No HTTPS", tone: "gray" },
   NOT_CONNECTED: { label: "Not Connected", tone: "gray" },
   NOT_INSTALLED: { label: "Not Installed", tone: "gray" },
   UNKNOWN: { label: "Unknown", tone: "gray" },
@@ -140,7 +141,10 @@ export function computeDomainStatus(input: {
     if (sDays <= 7) return "CRITICAL";
     if (sDays <= 30) return "EXPIRING_SOON";
   }
+  // Domain 16–60 days → Expiring Soon (spec §37 domain thresholds)
+  if (input.domainExpiresAt && daysBetween(now, input.domainExpiresAt) <= 60) return "DOMAIN_EXPIRING";
   if (input.verificationStatus === "MISMATCH") return "WARNING";
-  if (input.verificationStatus === "UNVERIFIED") return "UNVERIFIED";
+  if (input.sslStatus === "NO_SSL") return "NO_SSL";
+  if (input.verificationStatus === "UNVERIFIED" || input.verificationStatus === "FAILED") return "UNVERIFIED";
   return "HEALTHY";
 }
