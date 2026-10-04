@@ -30,9 +30,8 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
+# Full node_modules so the pinned Prisma CLI (and its deps) is available for `db push` at startup
+COPY --from=builder /app/node_modules ./node_modules
 
 # Non-root user that ships with the oven/bun image
 USER bun
@@ -42,4 +41,4 @@ ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
 # Push schema then start
-CMD ["sh", "-c", "bunx --bun prisma db push --skip-generate --accept-data-loss && bun server.js"]
+CMD ["sh", "-c", "bunx --bun prisma db push --skip-generate --accept-data-loss && HOSTNAME=0.0.0.0 bun server.js"]
