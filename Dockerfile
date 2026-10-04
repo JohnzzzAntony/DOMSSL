@@ -9,6 +9,8 @@ RUN bun install --frozen-lockfile
 
 FROM oven/bun:1 AS builder
 WORKDIR /app
+# Prisma needs OpenSSL to pick the right query engine
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -22,7 +24,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
@@ -32,11 +34,12 @@ COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 
-USER nextjs
+# Non-root user that ships with the oven/bun image
+USER bun
 
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
 # Push schema then start
-CMD ["sh", "-c", "bunx prisma db push --skip-generate --accept-data-loss && node server.js"]
+CMD ["sh", "-c", "bunx --bun prisma db push --skip-generate --accept-data-loss && bun server.js"]
